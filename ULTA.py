@@ -34,6 +34,12 @@ class OBJECT_OT_ulta(Operator):
 		default=True
 	)
 
+	collection_name: bpy.props.StringProperty(
+		name="Collection Name",
+		description="Collection of the new object",
+		default="Extras"
+	)
+
 	@classmethod
 	def poll(cls, context):
 		return context.object.select_get() and context.object.type == 'MESH'
@@ -42,6 +48,10 @@ class OBJECT_OT_ulta(Operator):
 		return context.window_manager.invoke_props_dialog(self)
 
 	def execute(self, context):
+		self.join_multiuser()
+		return {'FINISHED'}
+
+	def quick_export_selected(self):
 		# Batch export to unreal from selected objects
 		objects = [object for object in bpy.context.selected_objects]
 		active_obj = bpy.context.view_layer.objects.active
@@ -76,8 +86,6 @@ class OBJECT_OT_ulta(Operator):
 
 		bpy.context.view_layer.objects.active = active_obj
 
-		return {'FINISHED'}
-
 	# Prefix with SM_ and M_ and SK_
 	def fix_naming(self):
 		static_mesh_prefix = 'SM_'
@@ -102,6 +110,70 @@ class OBJECT_OT_ulta(Operator):
 			name = obj.name
 			obj.name = name.replace('_Blockout', '')
 
+	def join_multiuser(self):
+		# TODO: Poll if in object mode and if active object is selected when separate operator
+		ctx = bpy.context
+		selected_objs = bpy.context.selected_objects
+
+		# Split into meshes and empty
+		empty_obj = []
+		for obj in selected_objs:
+			if obj.type == 'EMPTY':
+				empty_obj.append(obj)
+				break
+
+		selected_objs[:] = [only_meshes for only_meshes in selected_objs if not only_meshes.type == 'EMPTY']
+
+		# Set active object, needed for joining later
+		ctx.view_layer.objects.active = selected_objs[0]
+
+		# Create collection
+		coll_name = self.collection_name + 'Joined'
+		coll_exists = False
+		for coll in bpy.data.collections[self.collection_name].children.values():
+			if coll_name in coll.name:
+				coll_exists = True
+				break
+
+		new_collection = None
+		if not coll_exists:
+			new_collection = bpy.data.collections.new(coll_name)
+			# Alternative: add to scene collection
+			# ctx.scene.collection.children.link(new_collection)
+			bpy.data.collections[self.collection_name].children.link(new_collection)
+		else:
+			new_collection = bpy.data.collections[coll_name]
+		bpy.ops.object.select_all(action='DESELECT')
+
+		# Duplicate meshes
+		for obj in selected_objs:
+			new_obj = obj.copy()
+			new_obj.data = obj.data.copy()
+			new_collection.objects.link(new_obj)
+			ctx.view_layer.objects.active = new_obj
+			new_obj.select_set(True)
+
+			# Apply all modifiers
+			for mod in [mods for mods in new_obj.modifiers]:
+				bpy.ops.object.modifier_apply(modifier=mod.name)
+
+		# Join objects
+		bpy.ops.object.join()
+		joined_obj = ctx.active_object
+		joined_obj.name = self.collection_name + '_Joined'
+
+		# Remove doubles
+		bpy.ops.object.mode_set(mode='EDIT')
+		bpy.ops.mesh.select_all(action='SELECT')
+		bpy.ops.mesh.remove_doubles()
+		bpy.ops.object.mode_set(mode='OBJECT')
+
+		# Set origin to empty
+		old_cursor_loc = ctx.scene.cursor.location
+		ctx.scene.cursor.location = empty_obj[0].location
+		bpy.ops.object.origin_set(type='ORIGIN_CURSOR', center='MEDIAN')
+		ctx.scene.cursor.location = old_cursor_loc
+
 
 def menu_func(self, context):
 	self.layout.operator(OBJECT_OT_ulta.bl_idname)
@@ -121,5 +193,8 @@ if __name__ == "__main__":
 	register()
 
 # TODO
-# Set origin to bottom of bounding box
+# Set origin to bottom of bounding box (+ set origin to middle of x and y of bounding box) bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY',center='BOUNDS')
 # Set origin to here (face, edge, vertex)
+# Apply all modifiers
+# Array modifier with randomization and "true" instancing, grid option, option to create one mesh or seperate object instances when applied
+# Select parent collection of object
